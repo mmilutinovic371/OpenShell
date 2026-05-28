@@ -24,6 +24,9 @@ use openshell_bootstrap::{
     remove_gateway_metadata, resolve_ssh_hostname, save_active_gateway, save_last_sandbox,
     store_gateway_metadata,
 };
+use openshell_bootstrap::{
+    GatewayMetadataSource, ListedGateway, gateway_metadata_source, list_gateways_with_source,
+};
 use openshell_core::progress::{
     PROGRESS_ACTIVE_DETAIL_KEY, PROGRESS_ACTIVE_STEP_KEY, PROGRESS_COMPLETE_LABEL_KEY,
     PROGRESS_COMPLETE_STEP_KEY, PROGRESS_STEP_PULLING_IMAGE, PROGRESS_STEP_REQUESTING_SANDBOX,
@@ -922,15 +925,17 @@ pub async fn gateway_add(
         &derived_name
     };
 
-    // Fail if a gateway with this name already exists.
-    if get_gateway_metadata(name).is_some() {
-        return Err(miette::miette!(
-            "Gateway '{}' already exists.\n\
-             Remove it first with: openshell gateway remove {}\n\
-             Or choose a different name with: --name <name>",
-            name,
-            name,
-        ));
+    match gateway_metadata_source(name)? {
+        Some(GatewayMetadataSource::User) => {
+            return Err(miette::miette!(
+                "Gateway '{}' already exists.\n\
+                 Remove it first with: openshell gateway remove {}\n\
+                 Or choose a different name with: --name <name>",
+                name,
+                name,
+            ));
+        }
+        Some(GatewayMetadataSource::System) | None => {}
     }
 
     // OIDC takes precedence over plaintext/mTLS/edge detection — the user
@@ -1283,7 +1288,7 @@ pub fn gateway_logout(name: &str) -> Result<()> {
 
 /// List all registered gateways.
 pub fn gateway_list(gateway_flag: &Option<String>, output: &str) -> Result<()> {
-    let gateways = list_gateways()?;
+    let gateways = list_gateways_with_source()?;
     let active = gateway_flag.clone().or_else(load_active_gateway);
 
     match output {
@@ -1323,41 +1328,52 @@ pub fn gateway_list(gateway_flag: &Option<String>, output: &str) -> Result<()> {
     // Calculate column widths
     let name_width = gateways
         .iter()
-        .map(|g| g.name.len())
+        .map(|g| g.metadata.name.len())
         .max()
         .unwrap_or(4)
         .max(4);
     let endpoint_width = gateways
         .iter()
-        .map(|g| g.gateway_endpoint.len())
+        .map(|g| g.metadata.gateway_endpoint.len())
         .max()
         .unwrap_or(8)
         .max(8);
     let type_width = gateways
         .iter()
-        .map(|g| gateway_type_label(g).len())
+        .map(|g| gateway_type_label(&g.metadata).len())
         .max()
         .unwrap_or(4)
         .max(4);
+    let source_width = gateways
+        .iter()
+        .map(|g| g.source.label().len())
+        .max()
+        .unwrap_or(6)
+        .max(6);
 
     // Print header
     println!(
-        "  {:<name_width$}  {:<endpoint_width$}  {:<type_width$}  {}",
+        "  {:<name_width$}  {:<endpoint_width$}  {:<type_width$}  {:<source_width$}  {}",
         "NAME".bold(),
         "ENDPOINT".bold(),
         "TYPE".bold(),
+        "SOURCE".bold(),
         "AUTH".bold(),
     );
 
     // Print rows
-    for gateway in &gateways {
-        let is_active = active.as_deref() == Some(&gateway.name);
+    for gateway in gateways {
+        let metadata = &gateway.metadata;
+        let is_active = active.as_deref() == Some(&metadata.name);
         let marker = if is_active { "*" } else { " " };
-        let gw_type = gateway_type_label(gateway);
-        let gw_auth = gateway_auth_label(gateway);
+        let gw_type = gateway_type_label(metadata);
+        let gw_auth = gateway_auth_label(metadata);
         let line = format!(
-            "{marker} {:<name_width$}  {:<endpoint_width$}  {:<type_width$}  {gw_auth}",
-            gateway.name, gateway.gateway_endpoint, gw_type,
+            "{marker} {:<name_width$}  {:<endpoint_width$}  {:<type_width$}  {:<source_width$}  {gw_auth}",
+            metadata.name,
+            metadata.gateway_endpoint,
+            gw_type,
+            gateway.source.label(),
         );
         if is_active {
             println!("{}", line.green());
@@ -1369,13 +1385,15 @@ pub fn gateway_list(gateway_flag: &Option<String>, output: &str) -> Result<()> {
     Ok(())
 }
 
-fn gateway_to_json(gateway: &GatewayMetadata, active: &Option<String>) -> serde_json::Value {
+fn gateway_to_json(gateway: &ListedGateway, active: &Option<String>) -> serde_json::Value {
+    let metadata = &gateway.metadata;
     serde_json::json!({
-        "name": gateway.name,
-        "endpoint": gateway.gateway_endpoint,
-        "type": gateway_type_label(gateway),
-        "auth": gateway_auth_label(gateway),
-        "active": active.as_deref() == Some(&gateway.name),
+        "name": metadata.name,
+        "endpoint": metadata.gateway_endpoint,
+        "type": gateway_type_label(metadata),
+        "source": gateway.source.label(),
+        "auth": gateway_auth_label(metadata),
+        "active": active.as_deref() == Some(&metadata.name),
     })
 }
 
@@ -1474,11 +1492,20 @@ fn remove_gateway_registration(name: &str) {
 
 /// Remove a local gateway registration without touching the gateway service.
 pub fn gateway_remove(name: &str) -> Result<()> {
-    if get_gateway_metadata(name).is_none() {
-        return Err(miette::miette!(
-            "No gateway metadata found for '{name}'.\n\
-             List available gateways: openshell gateway select"
-        ));
+    match gateway_metadata_source(name)? {
+        Some(GatewayMetadataSource::User) => {}
+        Some(GatewayMetadataSource::System) => {
+            return Err(miette::miette!(
+                "Gateway registration '{name}' is installed by the system and cannot be removed from user config.\n\
+                 Register a per-user gateway with the same name to override it, or select another gateway."
+            ));
+        }
+        None => {
+            return Err(miette::miette!(
+                "No gateway metadata found for '{name}'.\n\
+                 List available gateways: openshell gateway select"
+            ));
+        }
     }
 
     remove_gateway_registration(name);
@@ -7467,19 +7494,18 @@ mod tests {
         ProvisioningStep, TlsOptions, build_sandbox_resource_limits,
         dockerfile_sources_supported_for_gateway, format_endpoint, format_gateway_select_header,
         format_gateway_select_items, format_provider_attachment_table, gateway_add,
-        gateway_auth_label, gateway_env_override_warning, gateway_select_with, gateway_type_label,
-        git_sync_files, http_health_check, image_requests_gpu, import_local_package_mtls_bundle,
-        inferred_provider_type, mtls_certs_exist_for_gateway, package_managed_tls_dirs,
-        parse_cli_setting_value, parse_credential_expiry_cli_value, parse_credential_expiry_pairs,
-        parse_credential_pairs, plaintext_gateway_is_remote, progress_step_from_metadata,
-        provider_profile_allows_refresh_bootstrap, provisioning_timeout_message,
-        ready_false_condition_message, refresh_status_header, refresh_status_row, resolve_from,
-        sandbox_should_persist, sandbox_upload_plan, service_expose_status_error,
-        service_url_for_gateway,
+        gateway_auth_label, gateway_env_override_warning, gateway_select_with, gateway_to_json,
+        gateway_type_label, git_sync_files, http_health_check, image_requests_gpu,
+        import_local_package_mtls_bundle, inferred_provider_type, mtls_certs_exist_for_gateway,
+        package_managed_tls_dirs, parse_cli_setting_value, parse_credential_expiry_cli_value,
+        parse_credential_expiry_pairs, parse_credential_pairs, plaintext_gateway_is_remote,
+        progress_step_from_metadata, provider_profile_allows_refresh_bootstrap,
+        provisioning_timeout_message, ready_false_condition_message, refresh_status_header,
+        refresh_status_row, resolve_from, sandbox_should_persist, sandbox_upload_plan,
+        service_expose_status_error, service_url_for_gateway,
     };
     use crate::TEST_ENV_LOCK;
     use hyper::StatusCode;
-    use openshell_bootstrap::{load_active_gateway, load_gateway_metadata, store_gateway_metadata};
     use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -7488,7 +7514,10 @@ mod tests {
     use std::thread;
     use tonic::Status;
 
-    use openshell_bootstrap::GatewayMetadata;
+    use openshell_bootstrap::{
+        GatewayMetadata, GatewayMetadataSource, ListedGateway, load_active_gateway,
+        load_gateway_metadata, store_gateway_metadata,
+    };
     use openshell_core::progress::{
         PROGRESS_STEP_PULLING_IMAGE, PROGRESS_STEP_REQUESTING_SANDBOX,
         PROGRESS_STEP_STARTING_SANDBOX,
@@ -8420,6 +8449,26 @@ mod tests {
         assert!(items[1].contains("local"));
         assert!(items[1].contains("plaintext"));
         assert!(items[1].contains("http://127.0.0.1:8080"));
+    }
+
+    #[test]
+    fn gateway_to_json_includes_config_source() {
+        let gateway = ListedGateway {
+            metadata: GatewayMetadata {
+                name: "local-vm".to_string(),
+                gateway_endpoint: "http://127.0.0.1:17670".to_string(),
+                auth_mode: Some("plaintext".to_string()),
+                ..Default::default()
+            },
+            source: GatewayMetadataSource::System,
+        };
+
+        let json = gateway_to_json(&gateway, &Some("local-vm".to_string()));
+
+        assert_eq!(json["source"], "system");
+        assert_eq!(json["type"], "local");
+        assert_eq!(json["auth"], "plaintext");
+        assert_eq!(json["active"], true);
     }
 
     #[test]

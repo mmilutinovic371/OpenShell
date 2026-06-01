@@ -873,6 +873,9 @@ fn configured_compute_driver(config: &Config) -> Result<ComputeDriverKind> {
                 set --drivers or OPENSHELL_DRIVERS to kubernetes, podman, docker, or vm",
             )),
         },
+        // `ComputeDriverKind` isn't `Copy` because the `External` variant
+        // holds a `PathBuf` — clone the singleton driver so the `External`
+        // arm flows through the same code path as the four built-in drivers.
         [driver] => Ok(driver.clone()),
         drivers => Err(Error::config(format!(
             "multiple compute drivers are not supported yet; configured drivers: {}",

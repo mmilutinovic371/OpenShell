@@ -40,6 +40,12 @@ pub const DEFAULT_SUPERVISOR_IMAGE: &str = "ghcr.io/nvidia/openshell/supervisor:
 pub const CDI_GPU_DEVICE_ALL: &str = "nvidia.com/gpu=all";
 
 /// Compute backends the gateway can orchestrate sandboxes through.
+//
+// Note: this enum is NOT `Copy` because the `External` variant carries a
+// `PathBuf`. Upstream's earlier shape derived `Copy` and had `const fn
+// as_str(self)`; both are reverted here for the same reason — `as_str`
+// takes `&self` and is a non-`const` fn so the match can dispatch on
+// the boxed variant. All in-tree call sites already handle `Clone`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComputeDriverKind {

@@ -636,6 +636,8 @@ fn effective_single_driver(args: &RunArgs) -> Option<ComputeDriverKind> {
         return Some(ComputeDriverKind::External(socket));
     }
     match args.drivers.as_slice() {
+        // `ComputeDriverKind` isn't `Copy` (`External` holds a `PathBuf`);
+        // clone the singleton so this call site stays uniform.
         [] => openshell_core::config::detect_driver(),
         [driver] => Some(driver.clone()),
         _ => None,

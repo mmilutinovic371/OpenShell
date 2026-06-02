@@ -93,8 +93,14 @@ It also defines a system service with packaged Docker driver settings.
 - `openshell.gateway`
 
 The gateway service uses `refresh-mode: endure` so snap refreshes do not restart
-it while sandboxes are active. Restart the service manually when you are ready
-to move the gateway to the refreshed snap revision.
+it automatically. This avoids disconnecting active sandbox sessions, but means
+you must restart the gateway manually after a refresh to pick up the new revision:
+
+```shell
+sudo snap restart openshell.gateway
+```
+
+Note that restarting the gateway will interrupt active sandbox sessions.
 
 `openshell-sandbox` is staged next to `openshell-gateway` as the Docker
 supervisor binary. The gateway app starts through a small wrapper that sets
@@ -135,9 +141,10 @@ sudo snap connect openshell:ssh-keys
 
 The gateway uses Docker's default Unix socket location. The Docker snap exposes
 that socket through the connected `docker` interface, so no `DOCKER_HOST`
-override is required. The OpenShell snap still requires the Docker snap because
-it relies on the `docker:docker-daemon` slot; it does not work with Docker
-installed from a Debian package or Docker's upstream packages.
+override is required. The OpenShell snap requires the Docker snap because it
+relies on the `docker:docker-daemon` slot; it does not work with Docker
+installed from a Debian package or Docker's upstream packages. Support for
+system-installed Docker is coming in snapd 2.76.
 
 The service runs the gateway with Snap-specific environment defaults:
 

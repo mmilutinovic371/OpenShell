@@ -2593,7 +2593,7 @@ async fn main() -> Result<()> {
                     }
 
                     // Parse --env flags into a HashMap<String, String>.
-                    let env_map = run::parse_key_value_pairs(&envs, "--env")?;
+                    let env_map = run::parse_env_pairs(&envs)?;
 
                     // Parse --upload spec into (local_path, sandbox_path, git_ignore).
                     let upload_spec = upload.as_deref().map(|s| {
@@ -2755,7 +2755,7 @@ async fn main() -> Result<()> {
                             } else {
                                 None // auto-detect
                             };
-                            let env_map = run::parse_key_value_pairs(&envs, "--env")?;
+                            let env_map = run::parse_env_pairs(&envs)?;
                             let exit_code = run::sandbox_exec_grpc(
                                 endpoint,
                                 &name,

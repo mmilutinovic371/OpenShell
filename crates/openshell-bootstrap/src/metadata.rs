@@ -305,12 +305,11 @@ pub fn list_gateways_with_source() -> Result<Vec<ListedGateway>> {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
-            if seen.contains(&name) {
+            if !seen.insert(name) {
                 continue;
             }
             let metadata_path = path.join("metadata.json");
             if let Ok(metadata) = parse_gateway_metadata(&metadata_path) {
-                seen.insert(name);
                 gateways.push(ListedGateway { metadata, source });
             }
         }
@@ -728,6 +727,22 @@ mod tests {
                 "https://user-override"
             );
             assert_eq!(gateways[0].source, GatewayMetadataSource::User);
+        });
+    }
+
+    #[test]
+    fn list_gateways_invalid_user_entry_still_shadows_system() {
+        let user = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        with_tmp_xdg_and_system(user.path(), system.path(), || {
+            let user_metadata_path = user_gateway_metadata_path("shared").unwrap();
+            std::fs::create_dir_all(user_metadata_path.parent().unwrap()).unwrap();
+            std::fs::write(&user_metadata_path, "{not-json").unwrap();
+
+            write_system_metadata(&system.path().join("gateways"), "shared", "https://system");
+
+            let gateways = list_gateways_with_source().unwrap();
+            assert!(gateways.is_empty());
         });
     }
 }
